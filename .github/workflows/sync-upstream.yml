@@ -1,0 +1,31 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # 每 6 小时自动运行一次（UTC 时间的 0:00, 6:00, 12:00, 18:00，对应北京时间 8:00, 14:00, 20:00, 次日 2:00）
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Fork Repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync with Upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 替换为原仓库（Upstream）的地址
+          git remote add upstream https://github.com/ConlinH/pyv8c.git
+          git fetch upstream
+          # 替换为你要同步的主分支名称（通常是 main 或 master）
+          git checkout main
+          git merge upstream/main
+          git push origin main
