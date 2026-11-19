@@ -136,12 +136,21 @@ class Profile:
         self._blob_urls = {}
         self._blob_origins = {}
         self._databases = {}
+        self._file_systems = {}
         self.closed = False
         self._devtools = None
 
     def _ensure_open(self):
         if self.closed or self._closing or self.browser._closed or self.browser._closing:
             raise HostStateError("Profile is closed")
+
+    def file_system_state(self, key, factory):
+        """Share passive storage data, never realm-bound handles, within a partition."""
+        with self._state_lock:
+            self._ensure_open()
+            if key not in self._file_systems:
+                self._file_systems[key] = factory()
+            return self._file_systems[key]
 
     def create_blob_url(self, blob, realm=None):
         """Mint a ``blob:`` URL whose origin is the creating realm's origin.
@@ -331,6 +340,7 @@ class Profile:
             self._blob_urls.clear()
             self._blob_origins.clear()
             self._databases.clear()
+            self._file_systems.clear()
             with self._close_condition:
                 self._closing = False
                 self._close_owner = None
@@ -370,6 +380,7 @@ class Browser:
                  expose_unimplemented: bool = True,
                  stub_logging: Literal["on", "verbose", "off"] = "off",
                  interface_overrides: dict | None = None,
+                 gpu_enabled: bool = True,
                  webgl_backend: Literal["simulated", "angle"] = "simulated",
                  angle_library_dir: str | os.PathLike | None = None,
                  idl_path: str | os.PathLike | None = None,
@@ -454,6 +465,9 @@ class Browser:
         :param webgl_backend: select the default simulated backend or the
             experimental ANGLE WebGL 1 subset. Install ``pyv8c[angle]`` for ANGLE.
             The experimental backend is not suitable for untrusted content.
+        :param gpu_enabled: expose GPU-backed canvas contexts and adapter requests.
+            False makes WebGL/WebGPU context creation and WebGPU adapter requests
+            return null, while keeping CPU Canvas 2D available.
         :param angle_library_dir: use ANGLE libraries from this directory instead
             of comfy-angle; for compatibility, specifying it also selects ANGLE.
         :param idl_path: Chromium interface baseline JSON or ZIP to
@@ -504,6 +518,9 @@ class Browser:
         self.expose_unimplemented = bool(expose_unimplemented)
         self.stub_logging = str(stub_logging or "off")
         self._startup_stats = {}
+        if not isinstance(gpu_enabled, bool):
+            raise TypeError('gpu_enabled must be a bool')
+        self.gpu_enabled = gpu_enabled
         self._graphics_backend = None
         if webgl_backend not in ("simulated", "angle"):
             raise ValueError("webgl_backend must be 'simulated' or 'angle'")

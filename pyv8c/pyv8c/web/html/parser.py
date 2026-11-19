@@ -77,6 +77,8 @@ class _TreeBuilderMixin:
             in ('text/html', 'application/xhtml+xml')))
         if tag == 'math' and (space != MATHML_NAMESPACE or integration):
             namespace = MATHML_NAMESPACE
+        elif tag == 'svg':
+            namespace = SVG_NAMESPACE
         elif space == MATHML_NAMESPACE and not integration:
             namespace = SVG_NAMESPACE if tag == 'svg' else MATHML_NAMESPACE
         elif space == SVG_NAMESPACE and name not in ('foreignobject', 'desc', 'title'):
@@ -331,6 +333,10 @@ class IncrementalDOMParser(_TreeBuilderMixin):
         self._pop_auto_closing(tag)
         node = self._create_element(tag, attrs)
         if self.active:
+            if (tag == 'meta' and self.building and self.mode == 'in-head' and
+                    str(node.attributes.get('http-equiv', '')).lower() == 'content-security-policy'):
+                self.services.document_services.add_content_security_policy(
+                    node.attributes.get('content', ''))
             if tag == "script": self.services.document_services.parser_script_start(node)
             elif tag not in self.raw_text_tags: self.services.resource_services.discover_element_resource(node)
         # An ignored duplicate (a second html/head/body) never reached the tree.

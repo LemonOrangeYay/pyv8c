@@ -34,6 +34,8 @@ class WorkerContext:
     debug_parent: Any | None
     creator_origin: tuple
     resource_session: Any
+    cross_origin_isolated: bool = False
+    denied_permissions: frozenset = frozenset()
 
 
 class _TaskSource:
@@ -216,6 +218,20 @@ class _RealmCapabilityBase(_TaskSource):
         v8_context = self.v8_context
         return v8_context.heap_statistics() if v8_context is not None else {}
 
+    def memory_snapshot(self):
+        from ..foundation.heap_memory import HeapMemoryCache
+        cache = getattr(self, '_memory_cache', None)
+        if cache is None:
+            cache = self._memory_cache = HeapMemoryCache()
+        return cache.snapshot(self.heap_statistics, precise=self.cross_origin_isolated)
+
+    @property
+    def cross_origin_isolated(self):
+        return False
+
+    def permission_allowed(self, feature):
+        return True
+
 
 class _RealmCapability(_RealmCapabilityBase):
     """Realm identity, scripting and task posting (implements RealmServices)."""
@@ -258,6 +274,17 @@ class _RealmCapability(_RealmCapabilityBase):
     @property
     def v8_context(self):
         return getattr(self._owner._page_realm, "v8_context", None)
+
+    @property
+    def cross_origin_isolated(self):
+        return self._owner._navigation.cross_origin_isolated
+
+    def memory_snapshot(self):
+        cache = self._owner._page_realm.page.execution_group.heap_memory
+        return cache.snapshot(self.heap_statistics, precise=self.cross_origin_isolated)
+
+    def permission_allowed(self, feature):
+        return feature not in self._owner._navigation.denied_permissions
 
     def ancestor_origins(self):
         """The origins of this realm's ancestors, nearest first.
@@ -368,6 +395,7 @@ class WorkerRealmServices:
     def __init__(self, tasks, runtime):
         from .resources.worker import WorkerResourceCapability
         self.graphics_backend = getattr(getattr(runtime.config, 'browser', None), '_graphics_backend', None)
+        self.gpu_enabled = runtime.config.browser.gpu_enabled
         self.task_services = _TaskCapability(tasks, runtime.animation_frame_lane)
         runtime._resource_scope.add(self.task_services.cancel_animation_frames)
         self.realm_services = _WorkerRealmCapability(tasks, runtime)
@@ -404,6 +432,13 @@ class _WorkerRealmCapability(_RealmCapabilityBase):
         return self._runtime.script_url
 
     @property
+    def cross_origin_isolated(self):
+        return self._runtime.config.cross_origin_isolated
+
+    def permission_allowed(self, feature):
+        return feature not in self._runtime.config.denied_permissions
+
+    @property
     def origin(self):
         return self._runtime.services.resource_services.origin
 
@@ -413,6 +448,13 @@ class _ResourceCapability:
 
     def __init__(self, owner):
         self._owner = owner
+
+    def file_system_key(self):
+        page = self._owner._page_realm.page
+        return (tuple(page.top_page.origin), tuple(self._owner._origin))
+
+    def file_system_state(self, factory):
+        return self._owner._profile.file_system_state(self.file_system_key(), factory)
 
     def load_resource(self, url, request=None):
         return self._owner._resource_fetcher.load_resource(url, request)
@@ -465,6 +507,11 @@ class _DocumentCapability:
 
     def parser_script_start(self, node):
         return self._owner._navigation.parser_script_start(node)
+
+    def add_content_security_policy(self, text):
+        self._owner._navigation.content_policy.add(text)
+        factory = self._owner.window._window_value('trustedTypes')
+        self._owner._page_realm.v8_context.set_code_generation_handler(factory.code_generation)
 
     def parser_script_complete(self, node, source):
         return self._owner._navigation.parser_script_complete(node, source)
@@ -569,12 +616,15 @@ class _WorkerCapability:
             devtools=self._owner._profile._devtools,
             debug_parent=self._owner._page_realm.page._devtools_target,
             creator_origin=tuple(self._owner._origin),
+            cross_origin_isolated=self._owner.realm_services.cross_origin_isolated,
+            denied_permissions=self._owner._navigation.denied_permissions,
             resource_session=ResourceRequestSession(
                 profile=self._owner._profile, environment=self._owner.environment,
                 origin=tuple(self._owner._origin), base_url=self._owner.realm_services.url,
                 loader=browser.resource_loader, interceptor=browser.resource_interceptor,
                 backend=self._owner._profile.network_backend, cache_enabled=browser.cache_enabled,
-                site_for_cookies=site),
+                site_for_cookies=site, file_system_key=self._owner.resource_services.file_system_key(),
+                referrer_policy=self._owner._navigation.referrer_policy),
         )
 
     def create_worker_realm(self, config):
@@ -697,6 +747,7 @@ class PageServices:
                  navigation, scripts, resource_fetcher, frame_resources, document_resources, tasks, scope):
         self._profile = profile
         self.graphics_backend = profile.browser._graphics_backend
+        self.gpu_enabled = profile.browser.gpu_enabled
         self.environment = environment
         self.trace = trace
         self._ownership = ownership

@@ -162,7 +162,8 @@ def _singleton_values(window):
         "scheduler": lambda: Scheduler(services=window._services),
         "cookieStore": lambda: CookieStore(services=window._services),
         "navigation": lambda: Navigation(window=window),
-        "trustedTypes": TrustedTypePolicyFactory,
+        "trustedTypes": lambda: TrustedTypePolicyFactory(
+            policy=getattr(window, '_content_policy', None)),
         **{name: bar(name) for name in BAR_NAMES},
     })
 
@@ -600,9 +601,8 @@ class Window(_SchedulingMixin, WindowProperties):
         return window_secure_context(self)
 
     def get_crossOriginIsolated(self):
-        """Whether the document is cross-origin isolated: no COOP/COEP is set."""
         self._require_same_origin()
-        return False
+        return bool(self._services.realm_services.cross_origin_isolated)
 
     def get_originAgentCluster(self): self._require_same_origin(); return False
     def get_credentialless(self): self._require_same_origin(); return False
